@@ -19,7 +19,7 @@ breed [firefighters firefighter] ;; blue turtles to symbolize firefighters (step
 to setup
   clear-all
   set-default-shape turtles "square"
-  set num-firefighters 2      ;; try 5 first – make a slider later (step3)
+  set num-firefighters 50      ;; try 5 first – make a slider later (step3)
   set extinguish-rate 2       ;; each tick, they cut intensity by 2 (step3)
   ;; make some green trees
   ask patches with [(random-float 100) < density]
@@ -48,24 +48,57 @@ to setup
 end
 
 to go
-  if not any? turtles  ;; either fires or embers
-    [ stop ]
+  if not any? turtles [ stop ]
+
+  ;; Fires now spread to neighbors based on wind and temperature
   ask fires [
-  ask neighbors4 with [tree-state = "unaffected"]
-    [ ignite ]
-  set breed embers ]
+    spread-fire
+  ]
 
-  update-burning-trees ;;step 2
-  update-firefighters ;;step3
-  fade-embers ;;step2 but from original
+  update-burning-trees
+  update-firefighters
+  fade-embers
 
-
-  ;;ask fires ;;change
-    ;;[ ask neighbors4 with [pcolor = green]
-        ;;[ ignite ]
-      ;;set breed embers ]
-  ;;fade-embers
   tick
+end
+
+to spread-fire
+  let direction-vectors (list
+    (list 0 1)   ;; north
+    (list 0 -1)  ;; south
+    (list 1 0)   ;; east
+    (list -1 0)  ;; west
+  )
+
+  let wind-speeds (list north-wind-speed south-wind-speed east-wind-speed west-wind-speed)
+  let total-wind sum wind-speeds
+
+  if total-wind > 0 [
+    let normalized-probabilities (map [wind-speed -> wind-speed / total-wind] wind-speeds)
+
+    ;; Combine directions and probabilities into one list of lists
+    let combined-spread-info (map [[direction-vector prob] -> (list direction-vector prob)] direction-vectors normalized-probabilities)
+
+    foreach combined-spread-info [spread-info ->
+      let direction item 0 spread-info
+      let prob item 1 spread-info
+
+      if random-float 1.0 < prob [
+        let target-dx item 0 direction
+        let target-dy item 1 direction
+        let target-patch patch-at target-dx target-dy
+
+        ;; NEW: Check if the patch exists before we ask for its state
+        if target-patch != nobody [
+          if [tree-state] of target-patch = "unaffected" [
+            ask target-patch [ ignite ]
+          ]
+        ]
+      ]
+    ]
+  ]
+
+  set breed embers
 end
 
 ;; creates the fire turtles
@@ -81,7 +114,7 @@ to ignite  ;; patch procedure  ;; change to ignite
   if tree-state = "unaffected" [
     sprout-fires 1 [ set color red ]
     set tree-state "burning"
-    set fire-intensity 1
+    set fire-intensity 5
     set burn-counter 0
     set max-burn-counter 3 + random 5  ;; results in values between 3 to 7 (step2)
     set pcolor orange  ;; visually different from burnt
@@ -102,7 +135,8 @@ end
 to update-burning-trees ;; whole procedure is step2
   ask patches with [tree-state = "burning"] [
     set burn-counter burn-counter + 1
-    set fire-intensity fire-intensity + 1
+    ;; New: fire intensity increases faster with higher temps
+    set fire-intensity fire-intensity + (1 + (mean-air-temperature / 100))
     ;; make the color darker orange-red as it burns
     set pcolor scale-color red fire-intensity 1 max-burn-counter
 
@@ -197,7 +231,7 @@ density
 density
 0.0
 99.0
-63.0
+77.0
 1.0
 1
 %
@@ -236,6 +270,81 @@ NIL
 NIL
 NIL
 1
+
+SLIDER
+13
+196
+185
+229
+north-wind-speed
+north-wind-speed
+0
+100
+47.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+13
+249
+185
+282
+south-wind-speed
+south-wind-speed
+0
+100
+22.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+13
+299
+185
+332
+east-wind-speed
+east-wind-speed
+0
+100
+0.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+13
+342
+185
+375
+west-wind-speed
+west-wind-speed
+0
+100
+57.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+13
+384
+185
+417
+mean-air-temperature
+mean-air-temperature
+-50
+50
+27.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
