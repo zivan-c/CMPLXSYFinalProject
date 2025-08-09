@@ -12,8 +12,8 @@ patches-own [;added to orig code
   max-burn-counter ;; max ticks a tree can burn (step2) random for each tree
 ]
 
-breed [fires fire]    ;; bright red turtles -- the leading edge of the fire
-breed [embers ember]  ;; turtles gradually fading from red to near black
+;;breed [fires fire]    ;; bright red turtles -- the leading edge of the fire (step4)
+;;breed [embers ember]  ;; turtles gradually fading from red to near black (step4)
 breed [firefighters firefighter] ;; blue turtles to symbolize firefighters (step3)
 
 
@@ -37,6 +37,10 @@ to setup
       set tree-state "unaffected" ;added to orig code
       set burn-counter 0;added to orig code
       set fire-intensity 0;added to orig code
+  ]
+
+  ask patches with [tree-state != "unaffected"] [
+    set pcolor brown
   ]
   ;; make a column of burning trees
   ;;ask patches with [pxcor = min-pxcor] original code, starts at left side
@@ -85,6 +89,7 @@ to setup
       setxy base-x base-y
       set squad-id sid
       set is-leader? false
+      set mode "group"
     ]
 
     ;; Set one firefighter in each group as the leader
@@ -103,14 +108,15 @@ end
 to go
   if not any? turtles  ;; either fires or embers
     [ stop ]
-  ask fires [
-  ask neighbors4 with [tree-state = "unaffected"]
-    [ ignite ]
-  set breed embers ]
+  ask patches with [tree-state = "burning"] [
+    ask neighbors4 with [tree-state = "unaffected"] [
+      ignite
+    ]
+  ]
 
   update-burning-trees ;;step 2
   update-firefighters ;;step3
-  fade-embers ;;step2 but from original
+  ;;fade-embers ;;step2 but from original
 
 
   ;;ask fires ;;change
@@ -132,7 +138,8 @@ end
 to ignite  ;; patch procedure  ;; change to ignite
   ;; only ignite if it's a tree and unaffected
   if tree-state = "unaffected" [
-    sprout-fires 1 [ set color red ]
+    ;;sprout-fires 1 [ set color red ] (step4)
+
     set tree-state "burning"
     set fire-intensity 1
     set burn-counter 0
@@ -140,15 +147,6 @@ to ignite  ;; patch procedure  ;; change to ignite
     set pcolor orange  ;; visually different from burnt
     set burned-trees burned-trees + 1
   ]
-end
-
-;; achieve fading color effect for the fire as it burns
-to fade-embers
-  ask embers
-    [ set color color - 0.3  ;; make red darker
-      if color < red - 3.5     ;; are we almost at black?
-        [ set pcolor color
-          die ] ]
 end
 
 
@@ -164,7 +162,7 @@ to update-burning-trees ;; whole procedure is step2
       set tree-state "burnt"
       set pcolor black
       ;; kill the fire turtle on top if it exists
-      ask turtles-here with [breed = fires] [ die ]
+      ;;ask turtles-here with [breed = fires] [ die ]
     ]
   ]
 end
@@ -186,30 +184,38 @@ to update-firefighters
         if fire-intensity <= 0 [
           set tree-state "extinguished"
           set pcolor gray
-          ask turtles-here with [breed = fires] [ die ]
         ]
       ]
     ]
   ]
 
-  ;; Followers follow their leader
+  ;; Followers follow their leader or switch to solo mode
   ask firefighters with [not is-leader?] [
     let leader one-of firefighters with [squad-id = [squad-id] of myself and is-leader?]
+    let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
 
-    ifelse leader != nobody and distance leader <= 5 [
-      ;; Follow leader
-      face leader
-      fd 1
-    ] [
-      ;; Go solo to nearest fire
-      let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
+    if mode = "group" [
+      if local-fire != nobody and (distance local-fire < distance leader) [
+        set mode "solo"
+      ]
+    ]
+
+    if mode = "solo" [
       if local-fire != nobody [
         face local-fire
         fd 1
       ]
+      if local-fire = nobody [
+        set mode "group"
+      ]
     ]
 
-    ;; If standing on a burning tree, assist extinguishing
+    if mode = "group" and leader != nobody [
+      face leader
+      fd 1
+    ]
+
+    ;; Followers extinguish fire at their location too
     ask patch-here [
       if tree-state = "burning" [
         set fire-intensity fire-intensity - extinguish-rate
@@ -217,7 +223,6 @@ to update-firefighters
         if fire-intensity <= 0 [
           set tree-state "extinguished"
           set pcolor gray
-          ask turtles-here with [breed = fires] [ die ]
         ]
       ]
     ]
@@ -266,15 +271,15 @@ percent burned
 11
 
 SLIDER
-5
-38
-190
-71
+24
+35
+209
+68
 density
 density
 0.0
 99.0
-41.0
+65.0
 1.0
 1
 %

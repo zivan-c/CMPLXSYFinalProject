@@ -28,7 +28,7 @@ firefighters-own [
 to setup
   clear-all
   set-default-shape turtles "square"
-  set num-firefighters 50      ;; try 5 first – make a slider later (step3)
+  ;set num-firefighters 50      ;; try 5 first – make a slider later (step3)
   set extinguish-rate 2       ;; each tick, they cut intensity by 2 (step3)
   ;; make some green trees
   ask patches with [(random-float 100) < density]
@@ -39,8 +39,10 @@ to setup
       set fire-intensity 0;added to orig code
   ]
 
+  ask patches with [tree-state != "unaffected"] [
+    set pcolor brown
+  ]
 
-  ;; make a column of burning trees
   ;;ask patches with [pxcor = min-pxcor] original code, starts at left side
     ;;[ ignite ]
 
@@ -182,45 +184,41 @@ to update-firefighters
         if fire-intensity <= 0 [
           set tree-state "extinguished"
           set pcolor gray
-          ;;ask turtles-here with [breed = fires] [ die ]
         ]
       ]
     ]
   ]
 
-  ;; Followers follow their leader
+  ;; Followers follow their leader or switch to solo mode
   ask firefighters with [not is-leader?] [
+    let leader one-of firefighters with [squad-id = [squad-id] of myself and is-leader?]
+    let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
 
-  ;; Switch to solo if fire is closer than leader
-  let leader one-of firefighters with [squad-id = [squad-id] of myself and is-leader?]
-  let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
-
-  if mode = "group" [
-    if local-fire != nobody and (distance local-fire < distance leader) [
-      set mode "solo"
+    if mode = "group" [
+      if local-fire != nobody and (distance local-fire < distance leader) [
+        set mode "solo"
+      ]
     ]
-  ]
 
-  if mode = "solo" [
-    if local-fire != nobody [
-      face local-fire
+    if mode = "solo" [
+      if local-fire != nobody [
+        face local-fire
+        fd 1
+      ]
+      if local-fire = nobody [
+        set mode "group"
+      ]
+    ]
+
+    if mode = "group" and leader != nobody [
+      face leader
       fd 1
     ]
-    ;; Optional: return to group if no fire is near
-    if local-fire = nobody [
-      set mode "group"
-    ]
-  ]
-  if mode = "group" and leader != nobody [
-    face leader
-    fd 1
-  ]
 
-  ;; Try to extinguish the fire at your location
-  ask patches with [tree-state = "burning"] [
-      let n count firefighters-here
-      if n > 0 [
-        set fire-intensity fire-intensity - (extinguish-rate * n)
+    ;; Followers extinguish fire at their location too
+    ask patch-here [
+      if tree-state = "burning" [
+        set fire-intensity fire-intensity - extinguish-rate
         set pcolor scale-color blue fire-intensity 0 max-burn-counter
         if fire-intensity <= 0 [
           set tree-state "extinguished"
@@ -320,6 +318,54 @@ NIL
 NIL
 NIL
 1
+
+MONITOR
+12
+277
+194
+322
+Percentage of Trees Burned
+ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"burnt\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
+17
+1
+11
+
+MONITOR
+0
+389
+190
+434
+Percentage of Trees Extinguished
+ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"extinguished\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
+17
+1
+11
+
+MONITOR
+21
+222
+175
+267
+Percentage not burned
+ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"unaffected\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
+17
+1
+11
+
+SLIDER
+16
+449
+188
+482
+num-firefighers
+num-firefighers
+0
+100
+82.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
