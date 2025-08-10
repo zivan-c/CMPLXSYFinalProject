@@ -23,9 +23,9 @@ to setup
   clear-all
   set-default-shape turtles "square"
 
-  ;; Now num-firefighters comes from slider, not hardcoded
-  ;; extinguish-rate could be kept fixed or also made into a slider
-  set extinguish-rate 2
+  ;; Extinguish-rate scales with humidity
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+  set extinguish-rate 1 + (clamped-rh / 100)
 
   ;; Make some green trees
   ask patches with [(random-float 100) < density] [
@@ -86,14 +86,20 @@ to setup
   reset-ticks
 end
 
+
 to go
   if not any? patches with [tree-state = "burning"] [
     stop
   ]
 
   ask patches with [tree-state = "burning"] [
+    let clamped-rh max list 1 (min list 100 relative-humidity)
+    let spread-factor (1 - (clamped-rh / 100))  ;; lower RH = faster spread
+
     ask neighbors4 with [tree-state = "unaffected"] [
-      ignite
+      if random-float 1 < spread-factor [
+        ignite
+      ]
     ]
   ]
 
@@ -103,16 +109,22 @@ to go
 end
 
 to ignite  ;; patch procedure
-  ;; Effect of humidity: higher humidity makes ignition less likely
-  ;; Map absolute-humidity range (e.g., 0–30 g/m³) to ignition chance modifier
-  let humidity-effect (absolute-humidity / 30)  ;; 0 to 1 scale
-  let ignition-chance (1 - humidity-effect)     ;; more humidity = lower chance
+  let rh-50 37.48
+  let steepness-k 0.2
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+
+  ;; Logistic ignition probability
+  let ignition-chance 1 / (1 + exp (steepness-k * (clamped-rh - rh-50)))
 
   if tree-state = "unaffected" and (random-float 1 < ignition-chance) [
     set tree-state "burning"
     set fire-intensity 1
     set burn-counter 0
-    set max-burn-counter 3 + random 5
+
+    ;; Burn duration scaling with RH
+    let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
+    set max-burn-counter round ((3 + random 5) * humidity-burn-factor)
+
     set pcolor orange
     set burned-trees burned-trees + 1
   ]
@@ -285,7 +297,7 @@ num-firefighters
 num-firefighters
 1
 50
-20.0
+40.0
 1
 1
 NIL
@@ -296,12 +308,12 @@ SLIDER
 243
 186
 276
-absolute-humidity
-absolute-humidity
+relative-humidity
+relative-humidity
 0
-30
-20.0
-0.5
+50
+35.0
+1
 1
 NIL
 HORIZONTAL
