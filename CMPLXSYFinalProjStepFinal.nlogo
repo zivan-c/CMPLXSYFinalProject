@@ -24,8 +24,9 @@ to setup
   set-default-shape turtles "square"
 
   ;; Extinguish-rate scales with humidity
+  let base-rate 10
   let clamped-rh max list 1 (min list 100 relative-humidity)
-  set extinguish-rate 1 + (clamped-rh / 100)
+  set extinguish-rate base-rate * (1 + clamped-rh / 100)
 
   ;; Make some green trees
   ask patches with [(random-float 100) < density] [
@@ -86,7 +87,6 @@ to setup
   reset-ticks
 end
 
-
 to go
   if not any? patches with [tree-state = "burning"] [
     stop
@@ -110,7 +110,7 @@ end
 
 to ignite  ;; patch procedure
   let rh-50 37.48
-  let steepness-k 0.2
+  let steepness-k 0.156
   let clamped-rh max list 1 (min list 100 relative-humidity)
 
   ;; Logistic ignition probability
@@ -118,7 +118,7 @@ to ignite  ;; patch procedure
 
   if tree-state = "unaffected" and (random-float 1 < ignition-chance) [
     set tree-state "burning"
-    set fire-intensity 1
+    set fire-intensity 100
     set burn-counter 0
 
     ;; Burn duration scaling with RH
@@ -248,7 +248,7 @@ density
 density
 0.0
 99.0
-99.0
+70.0
 1.0
 1
 %
@@ -311,8 +311,8 @@ SLIDER
 relative-humidity
 relative-humidity
 0
-50
-35.0
+100
+61.0
 1
 1
 NIL
