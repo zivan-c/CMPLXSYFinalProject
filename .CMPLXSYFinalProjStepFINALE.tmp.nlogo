@@ -63,7 +63,7 @@ to setup
   ;; Set tree counts
   set initial-trees count patches with [pcolor = green]
   set burned-trees 0
-  set extinguished-trees 0
+  set extinguished-trees
 
   ;; Deploy firefighters
   let squad-size 5
@@ -131,7 +131,7 @@ to load-fixed-map
 
 to go
   if not any? patches with [tree-state = "burning"] [
-    write-run-summary
+
     stop
   ]
 
