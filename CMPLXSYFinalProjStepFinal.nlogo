@@ -3,6 +3,7 @@
 ;; max_temp / color-max (carrying capacity): 1000 – 3000. Larger values raise the ceiling of fire-intensity.
 ;; extinguish-rate (slider): increase if firefighters are still losing. Start testing around 20 – 60 (units/tick) depending on map scale and firefighter counts.
 ;; Weights in ignition/spread (0.65/0.35 and 0.70/0.30): change them if you want humidity to matter more (increase humidity weight) or temperature to dominate more (increase temp weight).
+extensions [csv]
 
 globals [
   initial-trees
@@ -43,16 +44,7 @@ to setup
   set net-extinguish-rate extinguish-rate * ((clamped-rh) / 100)
 
   ;; Make some green trees
-  ask patches with [(random-float 100) < density] [
-    set pcolor green
-    set tree-state "unaffected"
-    set burn-counter 0
-    set fire-intensity 0
-  ]
-
-  ask patches with [tree-state != "unaffected"] [
-    set pcolor brown
-  ]
+  load-fixed-map
 
   ;; Random ignition point
   let ignition-patch one-of patches with [tree-state = "unaffected"]
@@ -105,6 +97,34 @@ to setup
 
   reset-ticks
 end
+
+
+to load-fixed-map
+   file-open "fixed-forest.csv"
+   let _header file-read-line
+    while [not file-at-end?] [
+     let line file-read-line
+     let parts csv:from-row line  ;; already typed as numbers/strings
+     let x item 0 parts          ;; already a number
+     let y item 1 parts          ;; already a number
+     let state item 2 parts      ;; string
+     let burn item 3 parts       ;; number
+     let intensity item 4 parts  ;; number
+     let maxburn item 5 parts    ;; number
+      ask patch x y [
+       set tree-state state
+       set burn-counter burn
+       set fire-intensity intensity
+       set max-burn-counter maxburn
+             if state = "unaffected" [ set pcolor green ]
+       if state = "empty"       [ set pcolor brown ]
+       if state = "burning"     [ set pcolor orange ]
+       if state = "burnt"       [ set pcolor black ]
+       if state = "extinguished"[ set pcolor gray ]
+        ] 
+]   file-close end 
+
+
 
 to go
   if not any? patches with [tree-state = "burning"] [
@@ -435,7 +455,6 @@ to update-firefighters
     ]
   ]
 end
-
 @#$#@#$#@
 GRAPHICS-WINDOW
 200
@@ -533,7 +552,7 @@ num-firefighters
 num-firefighters
 1
 50
-1.0
+25.0
 1
 1
 NIL
