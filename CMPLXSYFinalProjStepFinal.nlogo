@@ -1,7 +1,13 @@
+;; temp_scale (in spread/ignite): try 200 – 600. LOWER temp_scale makes small intensities more effective; HIGHER temp_scale requires stronger flames to spread.
+;; growth-rate (in update-burning-trees): 0.01 – 0.03. Lower → slower growth, easier to extinguish.
+;; max_temp / color-max (carrying capacity): 1000 – 3000. Larger values raise the ceiling of fire-intensity.
+;; extinguish-rate (slider): increase if firefighters are still losing. Start testing around 20 – 60 (units/tick) depending on map scale and firefighter counts.
+;; Weights in ignition/spread (0.65/0.35 and 0.70/0.30): change them if you want humidity to matter more (increase humidity weight) or temperature to dominate more (increase temp weight).
+
 globals [
   initial-trees
   burned-trees
-  extinguish-rate
+  net-extinguish-rate
   relative-humidity
 ]
 
@@ -18,6 +24,11 @@ firefighters-own [
   squad-id
   is-leader?
   mode
+
+  ;; NEW:
+  target       ;; will hold a patch agent (or nobody)
+  working?     ;; boolean: true when standing on target and actively extinguishing
+  move-speed   ;; how far the firefighter moves per tick
 ]
 
 to setup
@@ -28,9 +39,8 @@ to setup
   set relative-humidity initial-relative-humidity
 
   ;; Extinguish-rate scales with humidity
-  let base-rate 2500
   let clamped-rh max list 1 (min list 100 relative-humidity)
-  set extinguish-rate base-rate * ((clamped-rh) / 100)
+  set net-extinguish-rate extinguish-rate * ((clamped-rh) / 100)
 
   ;; Make some green trees
   ask patches with [(random-float 100) < density] [
@@ -78,6 +88,11 @@ to setup
       set squad-id sid
       set is-leader? false
       set mode "group"
+
+      ;; NEW initialisation:
+      set target nobody
+      set working? false
+      set move-speed 0.8  ;; adjust to taste (0.5–1.0 is usually good)
     ]
 
     ask one-of firefighters with [squad-id = sid and is-leader? = false] [
@@ -96,23 +111,43 @@ to go
     stop
   ]
 
-  ;; Spread fire
-  ask patches with [tree-state = "burning"] [
-    let clamped-rh max list 1 (min list 100 relative-humidity)
-    let spread-humidity-factor 1 / (1 + exp (0.156 * (clamped-rh - 37.48)))
-
+  ;; Spread fire (reworked: use max neighbor intensity, smooth temp response, weighted blend)
+  ;; Spread fire (single attempt per unaffected patch; uses neighbor max intensity + adjacency)
+  ask patches with [tree-state = "unaffected"] [
     let burning-neighbors neighbors4 with [tree-state = "burning"]
-    let neighbor-intensity 0
     if any? burning-neighbors [
-      set neighbor-intensity mean [fire-intensity] of burning-neighbors
-    ]
+      ;; environment
+      let clamped-rh max list 1 (min list 100 relative-humidity)
+      let min_humidity 0.02
+      let rh_midpoint 50
+      let rh_steepness 0.06
+      let humidity_factor min_humidity + (1 - min_humidity) / (1 + exp (rh_steepness * (clamped-rh - rh_midpoint)))
 
-    let temp-factor 1 / (1 + exp (-0.01 * (neighbor-intensity - 100)))
+      ;; neighbor stats
+      let max_neighbor max [fire-intensity] of burning-neighbors
+      let n_burn count burning-neighbors
 
-    let spread-factor spread-humidity-factor * temp-factor
+      ;; adjacency factor: more burning neighbours raises chance but saturates
+      let neighbor_scale 2     ;; 1-> weak, 2-> near-full adjacency effect
+      let adjacency_factor min list 1 (n_burn / neighbor_scale)
 
-    ask neighbors4 with [tree-state = "unaffected"] [
-      if random-float 1 < spread-factor [
+      ;; temperature response (tunable)
+      let temp_scale 100       ;; TUNE: larger -> need stronger fire to spread
+      let temp_factor 0
+      if max_neighbor > 0 [
+        set temp_factor (max_neighbor / (max_neighbor + temp_scale)) * adjacency_factor
+      ]
+
+      ;; combine (temp dominates, humidity still matters)
+      let spread_factor 0.70 * temp_factor + 0.30 * humidity_factor
+
+      ;; global limiter to slow down unrealistically fast spread
+      let spread_multiplier 0.6   ;; TUNE between 0.3 - 1.0 (lower -> slower overall spread)
+      set spread_factor spread_factor * spread_multiplier
+
+      if spread_factor > 1 [ set spread_factor 1 ]
+      if random-float 1 < spread_factor [
+        ;; ignite deterministically — ignite() now seeds intensity (see ignite below)
         ignite
       ]
     ]
@@ -135,62 +170,80 @@ to start-fire  ;; patch procedure
   set burn-counter 0
 
   let clamped-rh max list 1 (min list 100 relative-humidity)
-  let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
-  set max-burn-counter round ((32 + random 64) * humidity-burn-factor)
+  let humidity-burn-factor (1.2 - (clamped-rh / 100) * 0.5) ;; Smaller RH Effect
+  set max-burn-counter round ((720 + random 720) * humidity-burn-factor) ;; Burns 12 Hours to 1 Day
 
   set pcolor orange
   set burned-trees burned-trees + 1
 end
 
 
-to ignite  ;; patch procedure
-  let rh-50 37.48
-  let steepness-k 0.156
+to ignite  ;; patch procedure — deterministic: called when we decide to ignite
+  ;; environmental RH used for burn-duration scaling (left similar to before)
   let clamped-rh max list 1 (min list 100 relative-humidity)
+  let humidity-burn-factor (1.2 - (clamped-rh / 100) * 0.5)
 
-  ;; Humidity effect (logistic)
-  let humidity-factor 1 / (1 + exp ((steepness-k) * (clamped-rh - rh-50)))
-
-  ;; Get neighbor intensity safely
+  ;; determine seed intensity from neighbors (start weaker than source)
   let burning-neighbors neighbors4 with [tree-state = "burning"]
-  let neighbor-intensity initial-fire-intensity
+  let neighbor_intensity 0
   if any? burning-neighbors [
-    set neighbor-intensity mean [fire-intensity] of burning-neighbors
+    set neighbor_intensity max [fire-intensity] of burning-neighbors
   ]
 
-  ;; Temperature effect (logistic)
-  let temp50 100   ;; °C for 50% chance
-  let temp-steepness 0.01
-  let temp-factor 1 / (1 + exp (-(temp-steepness) * (neighbor-intensity - temp50)))
-
-  ;; Combined ignition probability — humidity + temperature
-  let ignition-chance humidity-factor * temp-factor
-
-  if tree-state = "unaffected" and (random-float 1 < ignition-chance) [
-    set tree-state "burning"
-    set fire-intensity initial-fire-intensity
-    set burn-counter 0
-
-    ;; Burn duration scaling with RH
-    let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
-    set max-burn-counter round ((32 + random 64) * humidity-burn-factor)
-
-    set pcolor orange
-    set burned-trees burned-trees + 1
+  ;; seed scaling: new fires start as a fraction of the neighbor intensity
+  let seed_scale 0.875      ;; TUNE: lower -> newly ignited patches start weaker)
+  let seed_min 5           ;; minimal starting intensity
+  let seed_intensity seed_min
+  ifelse neighbor_intensity > 0 [
+    set seed_intensity max list seed_min (neighbor_intensity * seed_scale)
+  ] [
+    ;; no burning neighbors (e.g., setup call) -> small seed based on initial-fire-intensity
+    set seed_intensity max list seed_min (initial-fire-intensity * seed_scale)
   ]
+
+  ;; ignite deterministically
+  set tree-state "burning"
+  set fire-intensity seed_intensity
+  set burn-counter 0
+
+  ;; make burn duration scale modestly with RH AND with seed intensity
+  let intensity_ratio seed_intensity / max list 1 initial-fire-intensity
+  set max-burn-counter round ((720 + random 720) * humidity-burn-factor * (0.5 + 0.5 * intensity_ratio))
+
+  set pcolor orange
+  set burned-trees burned-trees + 1
 end
+
 
 to update-burning-trees
   ask patches with [tree-state = "burning"] [
     set burn-counter burn-counter + 1
 
-    ;; Non-linear fire growth
-    let growth-rate 0.08
-    let max-temp 1200
-    set fire-intensity fire-intensity + growth-rate * (max-temp - fire-intensity)
+    ;; Logistic-like growth
+    let growth-rate 0.05
+    let max_temp 1000
 
-    set pcolor scale-color red fire-intensity 1 max-temp
+    if fire-intensity <= 0 [ set fire-intensity 1 ]
 
+    let dI growth-rate * fire-intensity * (1 - fire-intensity / max_temp)
+    set fire-intensity fire-intensity + dI
+
+    if fire-intensity > max_temp [ set fire-intensity max_temp ]
+    if fire-intensity < 0 [ set fire-intensity 0 ]
+
+    ;; ---- Color Mapping ----
+    let color-min-intensity 1
+    let color-max-intensity max_temp
+    let base-color scale-color orange fire-intensity color-min-intensity color-max-intensity
+
+    ;; Ensure low-intensity flames look deep orange, not black
+    if fire-intensity <= 50 [
+      set base-color orange + 100
+    ]
+
+    set pcolor base-color
+
+    ;; ---- Burnout ----
     if burn-counter >= max-burn-counter [
       set tree-state "burnt"
       set pcolor black
@@ -199,62 +252,157 @@ to update-burning-trees
 end
 
 to update-firefighters
+  ;; update net extinguish rate based on current RH
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+  set net-extinguish-rate extinguish-rate * ((clamped-rh) / 100)
+
+  ;; tuning params
+  let leader_switch_threshold 2.0   ;; leader will switch target if a frontier is this much closer
+  let switch_threshold 1.0          ;; follower switching threshold
+  let color_max 1000                ;; should match update-burning-trees' max_temp
+  ;; move & arrival
+  ;; LEADERS
   ask firefighters with [is-leader?] [
-    let target min-one-of patches with [tree-state = "burning"] [distance myself]
-    if target != nobody [
-      face target
-      fd 1
+    ;; target nearest frontier patch if any
+    let frontier patches with [tree-state = "burning" and any? neighbors4 with [tree-state = "unaffected"]]
+    ifelse any? frontier [
+      let best_frontier min-one-of frontier [distance myself]
+      ifelse target = nobody [
+        set target best_frontier
+        set working? false
+      ] [
+        ;; if current target stopped burning -> switch
+        ifelse [tree-state] of target != "burning" [
+          set target best_frontier
+          set working? false
+        ] [
+          ;; if a frontier is *significantly* closer than current target, switch
+          if distance best_frontier + leader_switch_threshold < distance target [
+            set target best_frontier
+            set working? false
+          ]
+        ]
+      ]
+    ] [
+      ;; fallback: nearest burning patch
+      if target = nobody or (target != nobody and [tree-state] of target != "burning") [
+        set target min-one-of patches with [tree-state = "burning"] [distance myself]
+        set working? false
+      ]
     ]
 
-    ask patch-here [
-      if tree-state = "burning" [
-        set fire-intensity fire-intensity - extinguish-rate
-        set pcolor scale-color blue fire-intensity 0 max-burn-counter
-        if fire-intensity <= 0 [
-          set tree-state "extinguished"
-          set pcolor gray
+    ;; move / work
+    if target != nobody [
+      ifelse patch-here = target [
+        set working? true
+      ] [
+        if not working? [
+          face target
+          fd move-speed
         ]
+      ]
+    ]
+
+    ;; extinguish if working
+    if working? [
+      ask patch-here [
+        if tree-state = "burning" [
+          set fire-intensity fire-intensity - net-extinguish-rate
+          set pcolor scale-color blue fire-intensity 0 color_max
+          if fire-intensity <= 0 [
+            set tree-state "extinguished"
+            set pcolor gray
+          ]
+        ]
+      ]
+      ;; if patch no longer burning, clear target
+      if [tree-state] of patch-here != "burning" [
+        set target nobody
+        set working? false
       ]
     ]
   ]
 
+  ;; FOLLOWERS
   ask firefighters with [not is-leader?] [
     let leader one-of firefighters with [squad-id = [squad-id] of myself and is-leader?]
-    let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
 
     if mode = "group" [
-      if local-fire != nobody and (distance local-fire < distance leader) [
-        set mode "solo"
+      ;; follow leader's target if it exists and is burning
+      ifelse leader != nobody and [target] of leader != nobody and [tree-state] of [target] of leader = "burning" [
+        if target != [target] of leader [
+          set target [target] of leader
+          set working? false
+        ]
+      ] [
+        ;; fallback to nearest frontier, else nearest burning patch
+        let frontier patches with [tree-state = "burning" and any? neighbors4 with [tree-state = "unaffected"]]
+        ifelse any? frontier [
+          if target = nobody or (target != nobody and [tree-state] of target != "burning") [
+            set target min-one-of frontier [distance myself]
+            set working? false
+          ]
+        ] [
+          if target = nobody or (target != nobody and [tree-state] of target != "burning") [
+            set target min-one-of patches with [tree-state = "burning"] [distance myself]
+            set working? false
+          ]
+        ]
       ]
     ]
 
     if mode = "solo" [
-      if local-fire != nobody [
-        face local-fire
-        fd 1
-      ]
-      if local-fire = nobody [
-        set mode "group"
+      if target = nobody or (target != nobody and [tree-state] of target != "burning") [
+        set target min-one-of patches with [tree-state = "burning"] [distance myself]
+        set working? false
       ]
     ]
 
+    ;; allow switching to solo if significantly closer to a frontier than leader
     if mode = "group" and leader != nobody [
-      face leader
-      fd 1
+      let nearest_frontier min-one-of patches with [tree-state = "burning" and any? neighbors4 with [tree-state = "unaffected"]] [distance myself]
+      if nearest_frontier != nobody [
+        if distance nearest_frontier < (distance leader - switch_threshold) [
+          set mode "solo"
+          set target nearest_frontier
+          set working? false
+        ]
+      ]
     ]
 
-    ask patch-here [
-      if tree-state = "burning" [
-        set fire-intensity fire-intensity - extinguish-rate
-        set pcolor scale-color blue fire-intensity 0 max-burn-counter
-        if fire-intensity <= 0 [
-          set tree-state "extinguished"
-          set pcolor gray
+    ;; move / work
+    if target != nobody [
+      ifelse patch-here = target [
+        set working? true
+      ] [
+        if not working? [
+          face target
+          fd move-speed
         ]
+      ]
+    ]
+
+    ;; extinguish if working
+    if working? [
+      ask patch-here [
+        if tree-state = "burning" [
+          set fire-intensity fire-intensity - net-extinguish-rate
+          set pcolor scale-color blue fire-intensity 0 color_max
+          if fire-intensity <= 0 [
+            set tree-state "extinguished"
+            set pcolor gray
+          ]
+        ]
+      ]
+      if [tree-state] of patch-here != "burning" [
+        set target nobody
+        set working? false
+        set mode "group"
       ]
     ]
   ]
 end
+
 @#$#@#$#@
 GRAPHICS-WINDOW
 200
@@ -288,7 +436,7 @@ MONITOR
 83
 151
 128
-percent burned
+percent burning
 (burned-trees / initial-trees)\n* 100
 1
 1
@@ -303,7 +451,7 @@ density
 density
 0.0
 99.0
-99.0
+65.0
 1.0
 1
 %
@@ -352,47 +500,47 @@ num-firefighters
 num-firefighters
 1
 50
-35.0
+25.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-9
-275
-181
-308
+6
+313
+178
+346
 initial-relative-humidity
 initial-relative-humidity
 0
 100
-57.96
+75.16
 0.01
 1
 NIL
 HORIZONTAL
 
 SLIDER
-12
-360
-184
-393
+9
+398
+181
+431
 initial-fire-intensity
 initial-fire-intensity
 250
 1000
-498.0
+360.0
 1
 1
 NIL
 HORIZONTAL
 
 SLIDER
-13
-319
-185
-352
+10
+357
+182
+390
 humidity-drop-rate
 humidity-drop-rate
 0.1
@@ -413,6 +561,21 @@ relative-humidity
 17
 1
 11
+
+SLIDER
+6
+274
+178
+307
+extinguish-rate
+extinguish-rate
+250
+2500
+594.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
