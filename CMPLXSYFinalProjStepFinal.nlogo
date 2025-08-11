@@ -111,7 +111,11 @@ to go
     stop
   ]
 
-  ;; Spread fire (reworked: use max neighbor intensity, smooth temp response, weighted blend)
+  ;; Wind Speed
+  let wind-x (east-wind-speed - west-wind-speed)   ;; positive → wind blows east
+  let wind-y (north-wind-speed - south-wind-speed) ;; positive → wind blows north
+  let wind-mag sqrt (wind-x ^ 2 + wind-y ^ 2)
+
   ;; Spread fire (single attempt per unaffected patch; uses neighbor max intensity + adjacency)
   ask patches with [tree-state = "unaffected"] [
     let burning-neighbors neighbors4 with [tree-state = "burning"]
@@ -139,13 +143,42 @@ to go
       ]
 
       ;; combine (temp dominates, humidity still matters)
-      let spread_factor 0.70 * temp_factor + 0.30 * humidity_factor
+      let base_spread_factor 0.5 * (0.70 * temp_factor + 0.30 * humidity_factor)
+
+      ; wind influence
+      let wind_factor 1
+      if wind-mag > 0 [
+        if any? burning-neighbors [
+          let influence 0
+          foreach sort burning-neighbors [
+            bn ->
+            ;; vector from burning neighbor to this candidate patch
+            let windDX (pxcor - [pxcor] of bn)
+            let windDY (pycor - [pycor] of bn)
+            let dir-dot (windDX * wind-x + windDY * wind-y)
+            let dir-mag sqrt (windDX ^ 2 + windDY ^ 2)
+            if dir-mag > 0 [
+              let cos-angle dir-dot / (dir-mag * wind-mag)
+              ;; clamp numerical drift
+              if cos-angle > 1 [ set cos-angle 1 ]
+              if cos-angle < -1 [ set cos-angle -1 ]
+              ;; cos-angle ≈ 1 => downwind (boost), ≈ -1 => upwind (penalty)
+              set influence influence + (1 + 0.5 * cos-angle)
+            ]
+          ]
+          ;; average influence from burning neighbors
+          set wind_factor influence / count burning-neighbors
+        ]
+      ]
+
+      let spread_factor base_spread_factor * wind_factor
 
       ;; global limiter to slow down unrealistically fast spread
       let spread_multiplier 0.6   ;; TUNE between 0.3 - 1.0 (lower -> slower overall spread)
       set spread_factor spread_factor * spread_multiplier
 
       if spread_factor > 1 [ set spread_factor 1 ]
+      if spread_factor < 0 [ set spread_factor 0 ]
       if random-float 1 < spread_factor [
         ;; ignite deterministically — ignite() now seeds intensity (see ignite below)
         ignite
@@ -500,7 +533,7 @@ num-firefighters
 num-firefighters
 1
 50
-25.0
+1.0
 1
 1
 NIL
@@ -530,7 +563,7 @@ initial-fire-intensity
 initial-fire-intensity
 250
 1000
-360.0
+1000.0
 1
 1
 NIL
@@ -572,6 +605,66 @@ extinguish-rate
 250
 2500
 594.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+716
+209
+888
+242
+north-wind-speed
+north-wind-speed
+0
+25
+25.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+716
+257
+888
+290
+south-wind-speed
+south-wind-speed
+0
+25
+0.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+715
+306
+887
+339
+west-wind-speed
+west-wind-speed
+0
+25
+25.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+716
+356
+888
+389
+east-wind-speed
+east-wind-speed
+0
+25
+0.0
 1
 1
 NIL
