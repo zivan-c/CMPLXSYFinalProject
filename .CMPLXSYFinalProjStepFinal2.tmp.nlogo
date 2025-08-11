@@ -1,84 +1,66 @@
+extensions [csv]
+
 globals [
-  initial-trees   ;; how many trees (green patches) we started with
-  burned-trees    ;; how many have burned so far
-  num-firefighters ;;how many firefighters for setup
-  extinguish-rate ;; how much intensity they remove per tick
+  initial-trees
+  burned-trees
+  extinguish-rate
+  relative-humidity
 ]
 
-patches-own [;added to orig code
+
+patches-own [
   tree-state
   burn-counter
   fire-intensity
-  max-burn-counter ;; max ticks a tree can burn (step2) random for each tree
+  max-burn-counter
 ]
 
-;;breed [fires fire]    ;; bright red turtles -- the leading edge of the fire (step4)
-;;breed [embers ember]  ;; turtles gradually fading from red to near black (step4)
-breed [firefighters firefighter] ;; blue turtles to symbolize firefighters (step3)
-
+breed [firefighters firefighter]
 
 firefighters-own [
   squad-id
   is-leader?
-  mode ;;group or solo
+  mode
 ]
-
-
 
 to setup
   clear-all
   set-default-shape turtles "square"
-  ;set num-firefighters 50      ;; try 5 first – make a slider later (step3)
-  set extinguish-rate 2       ;; each tick, they cut intensity by 2 (step3)
-  ;; make some green trees
-  ask patches with [(random-float 100) < density]
-    [
-      set pcolor green
-      set tree-state "unaffected" ;added to orig code
-      set burn-counter 0;added to orig code
-      set fire-intensity 0;added to orig code
-  ]
 
-  ask patches with [tree-state != "unaffected"] [
-    set pcolor brown
-  ]
+  ;; Use initial slider value for runtime RH
+  set relative-humidity initial-relative-humidity
 
-  ;;ask patches with [pxcor = min-pxcor] original code, starts at left side
-    ;;[ ignite ]
+  ;; Extinguish-rate scales with humidity
+  let base-rate 2500
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+  set extinguish-rate base-rate * ((clamped-rh) / 100)
 
-  let ignition-patch one-of patches with [tree-state = "unaffected"] ;;random start of fire
+  ;; Make some green trees
+  load-fixed-map
+
+  ;; Random ignition point
+  let ignition-patch one-of patches with [tree-state = "unaffected"]
   if ignition-patch != nobody [
     ask ignition-patch [
-      ignite
-
-      ;; now inside the patch context, neighbors4 is allowed
+      start-fire
       ask neighbors4 with [tree-state = "unaffected"] [
         ignite
       ]
     ]
   ]
-  ;; set tree counts
+
+  ;; Set tree counts
   set initial-trees count patches with [pcolor = green]
   set burned-trees 0
 
-  ;; Create firefighters at random locations (Step3)
-  ;;create-firefighters num-firefighters [
-    ;;set shape "person"
-    ;;set size 10
-   ;; set color blue
-    ;;setxy random-xcor random-ycor
-  ;;]
-
-
+  ;; Deploy firefighters
   let squad-size 5
   let num-squads floor (num-firefighters / squad-size)
-
   let spacing 3
   let start-y min-pycor + 5
 
-  ;; Deploy each squad at corners or edges
+  let sid 0
   repeat num-squads [
-    let sid 0  ;; this will increment as squad ID
     let base-x (min-pxcor + 2 + random 3) + (sid * 5)
     let base-y (start-y + random spacing)
 
@@ -92,83 +74,165 @@ to setup
       set mode "group"
     ]
 
-    ;; Set one firefighter in each group as the leader
     ask one-of firefighters with [squad-id = sid and is-leader? = false] [
       set color cyan
       set is-leader? true
     ]
+
     set sid sid + 1
   ]
-
-
 
   reset-ticks
 end
 
-to go
-  if not any? turtles  ;; either fires or embers
-    [ stop ]
-  ask patches with [tree-state = "burning"] [
-    ask neighbors4 with [tree-state = "unaffected"] [
-      ignite
+
+
+to generate-and-save-map
+  clear-all
+  random-seed 12345  ;; fixed seed for reproducibility
+  set-default-shape turtles "square"
+
+  let forest-density 60  ;; percent of patches with trees
+  let clamped-rh max list 1 (min list 100 initial-relative-humidity)
+
+  ask patches [
+    ifelse random-float 100 < forest-density [
+      set pcolor green
+      set tree-state "unaffected"
+      set burn-counter 0
+      set fire-intensity 0
+      let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
+      set max-burn-counter round ((32 + random 64) * humidity-burn-factor)
+    ] [
+      set pcolor brown
+      set tree-state "empty"
+      set burn-counter 0
+      set fire-intensity 0
+      set max-burn-counter 0
     ]
   ]
 
-  update-burning-trees ;;step 2
-  update-firefighters ;;step3
-  ;;fade-embers ;;step2 but from original
+  ;; Save layout to CSV
+  let file-name "fixed-forest.csv"
+  file-open file-name
+  file-print "x,y,tree-state,burn-counter,fire-intensity,max-burn-counter"
+  ask patches [
+    file-print (word pxcor "," pycor "," tree-state "," burn-counter "," fire-intensity "," max-burn-counter)
+  ]
+  file-close
+  user-message (word "Map saved to " file-name)
+end
 
 
-  ;;ask fires ;;change
-    ;;[ ask neighbors4 with [pcolor = green]
-        ;;[ ignite ]
-      ;;set breed embers ]
-  ;;fade-embers
+
+to go
+  if not any? patches with [tree-state = "burning"] [
+    stop
+  ]
+
+  ;; Spread fire
+  ask patches with [tree-state = "burning"] [
+    let clamped-rh max list 1 (min list 100 relative-humidity)
+    let spread-humidity-factor 1 / (1 + exp (0.156 * (clamped-rh - 37.48)))
+
+    let burning-neighbors neighbors4 with [tree-state = "burning"]
+    let neighbor-intensity 0
+    if any? burning-neighbors [
+      set neighbor-intensity mean [fire-intensity] of burning-neighbors
+    ]
+
+    let temp-factor 1 / (1 + exp (-0.01 * (neighbor-intensity - 100)))
+
+    let spread-factor spread-humidity-factor * temp-factor
+
+    ask neighbors4 with [tree-state = "unaffected"] [
+      if random-float 1 < spread-factor [
+        ignite
+      ]
+    ]
+  ]
+
+  ;; Decrease humidity based on burn coverage
+  let burning-patches count patches with [tree-state = "burning"]
+  let total-patches count patches
+  let burn-fraction burning-patches / total-patches
+  set relative-humidity max list 1 (relative-humidity - (humidity-drop-rate * burn-fraction))
+
+  update-burning-trees
+  update-firefighters
   tick
 end
 
-;; creates the fire turtles
-;;to ignite  ;; patch procedure
-  ;;sprout-fires 1
-    ;;[ set color red ]
- ;; set pcolor black
-  ;;set burned-trees burned-trees + 1
-;;end
+to start-fire  ;; patch procedure
+  set tree-state "burning"
+  set fire-intensity initial-fire-intensity
+  set burn-counter 0
 
-to ignite  ;; patch procedure  ;; change to ignite
-  ;; only ignite if it's a tree and unaffected
-  if tree-state = "unaffected" [
-    ;;sprout-fires 1 [ set color red ] (step4)
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+  let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
+  set max-burn-counter round ((32 + random 64) * humidity-burn-factor)
 
+  set pcolor orange
+  set burned-trees burned-trees + 1
+end
+
+
+to ignite  ;; patch procedure
+  let rh-50 37.48
+  let steepness-k 0.156
+  let clamped-rh max list 1 (min list 100 relative-humidity)
+
+  ;; Humidity effect (logistic)
+  let humidity-factor 1 / (1 + exp ((steepness-k) * (clamped-rh - rh-50)))
+
+  ;; Get neighbor intensity safely
+  let burning-neighbors neighbors4 with [tree-state = "burning"]
+  let neighbor-intensity initial-fire-intensity
+  if any? burning-neighbors [
+    set neighbor-intensity mean [fire-intensity] of burning-neighbors
+  ]
+
+  ;; Temperature effect (logistic)
+  let temp50 100   ;; °C for 50% chance
+  let temp-steepness 0.01
+  let temp-factor 1 / (1 + exp (-(temp-steepness) * (neighbor-intensity - temp50)))
+
+  ;; Combined ignition probability — humidity + temperature
+  let ignition-chance humidity-factor * temp-factor
+
+  if tree-state = "unaffected" and (random-float 1 < ignition-chance) [
     set tree-state "burning"
-    set fire-intensity 1
+    set fire-intensity initial-fire-intensity
     set burn-counter 0
-    set max-burn-counter 3 + random 5  ;; results in values between 3 to 7 (step2)
-    set pcolor orange  ;; visually different from burnt
+
+    ;; Burn duration scaling with RH
+    let humidity-burn-factor (1.5 - (clamped-rh / 100) * 1.0)
+    set max-burn-counter round ((32 + random 64) * humidity-burn-factor)
+
+    set pcolor orange
     set burned-trees burned-trees + 1
   ]
 end
 
-
-to update-burning-trees ;; whole procedure is step2
+to update-burning-trees
   ask patches with [tree-state = "burning"] [
     set burn-counter burn-counter + 1
-    set fire-intensity fire-intensity + 1
-    ;; make the color darker orange-red as it burns
-    set pcolor scale-color red fire-intensity 1 max-burn-counter
 
-    ;; if fully burned
+    ;; Non-linear fire growth
+    let growth-rate 0.08
+    let max-temp 1200
+    set fire-intensity fire-intensity + growth-rate * (max-temp - fire-intensity)
+
+    set pcolor scale-color red fire-intensity 1 max-temp
+
     if burn-counter >= max-burn-counter [
       set tree-state "burnt"
       set pcolor black
-      ;; kill the fire turtle on top if it exists
-      ;;ask turtles-here with [breed = fires] [ die ]
     ]
   ]
 end
 
 to update-firefighters
-  ;; Leaders pick the nearest burning tree and move toward it
   ask firefighters with [is-leader?] [
     let target min-one-of patches with [tree-state = "burning"] [distance myself]
     if target != nobody [
@@ -176,7 +240,6 @@ to update-firefighters
       fd 1
     ]
 
-    ;; Try to extinguish the fire at your location
     ask patch-here [
       if tree-state = "burning" [
         set fire-intensity fire-intensity - extinguish-rate
@@ -189,7 +252,6 @@ to update-firefighters
     ]
   ]
 
-  ;; Followers follow their leader or switch to solo mode
   ask firefighters with [not is-leader?] [
     let leader one-of firefighters with [squad-id = [squad-id] of myself and is-leader?]
     let local-fire min-one-of patches with [tree-state = "burning"] [distance myself]
@@ -215,7 +277,6 @@ to update-firefighters
       fd 1
     ]
 
-    ;; Followers extinguish fire at their location too
     ask patch-here [
       if tree-state = "burning" [
         set fire-intensity fire-intensity - extinguish-rate
@@ -228,9 +289,6 @@ to update-firefighters
     ]
   ]
 end
-
-; Copyright 1997 Uri Wilensky.
-; See Info tab for full copyright and license.
 @#$#@#$#@
 GRAPHICS-WINDOW
 200
@@ -260,10 +318,10 @@ ticks
 30.0
 
 MONITOR
-43
-131
-158
-176
+36
+83
+151
+128
 percent burned
 (burned-trees / initial-trees)\n* 100
 1
@@ -271,25 +329,25 @@ percent burned
 11
 
 SLIDER
-24
-35
-209
-68
+4
+190
+189
+223
 density
 density
 0.0
 99.0
-60.0
+65.0
 1.0
 1
 %
 HORIZONTAL
 
 BUTTON
-106
-79
-175
-115
+102
+36
+171
+72
 go
 go
 T
@@ -303,10 +361,10 @@ NIL
 1
 
 BUTTON
-26
-79
-96
-115
+22
+36
+92
+72
 setup
 setup
 NIL
@@ -319,53 +377,76 @@ NIL
 NIL
 1
 
-MONITOR
-12
-277
-194
-322
-Percentage of Trees Burned
-ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"burnt\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
-17
-1
-11
-
-MONITOR
-0
-389
-190
-434
-Percentage of Trees Extinguished
-ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"extinguished\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
-17
-1
-11
-
-MONITOR
-21
-222
-175
-267
-Percentage not burned
-ifelse-value (initial-trees > 0)\n  [ round ((count patches with [tree-state = \"unaffected\"]) / initial-trees * 100 * 10) / 10 ]\n  [ 0 ]
-17
-1
-11
-
 SLIDER
-16
-449
-188
-482
-num-firefighers
-num-firefighers
-0
-100
-82.0
+10
+235
+182
+268
+num-firefighters
+num-firefighters
+1
+50
+50.0
 1
 1
 NIL
 HORIZONTAL
+
+SLIDER
+9
+275
+181
+308
+initial-relative-humidity
+initial-relative-humidity
+0
+100
+39.49
+0.01
+1
+NIL
+HORIZONTAL
+
+SLIDER
+12
+360
+184
+393
+initial-fire-intensity
+initial-fire-intensity
+250
+1000
+1000.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+13
+319
+185
+352
+humidity-drop-rate
+humidity-drop-rate
+0.1
+10
+4.14
+0.01
+1
+NIL
+HORIZONTAL
+
+MONITOR
+36
+138
+142
+183
+NIL
+relative-humidity
+17
+1
+11
 
 @#$#@#$#@
 ## WHAT IS IT?
